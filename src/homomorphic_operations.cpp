@@ -315,6 +315,44 @@ BICYCL::CL_HSM2k::CipherText ciphertext_multiplication(
     return r;
 }
 
+// 2-degree Polynomial Evaluation: ax^2 + bx + c where a,b,c are constants and x is ciphertext
+void two_degree_polynomial_evaluation(BICYCL::CL_HSM2k& hsm2k, BICYCL::RandGen& randgen, BICYCL::CL_HSM2k::PublicKey& pk, LISSKeyGen& lk, std::vector<int>& threshold_parties) {
+    std::cout << "\nHomomorphic Two-Degree Polynomial Evaluation:" << std::endl;
+
+    int a = 9, b = 10, c = 7, x1 = 3, x2 = 7;
+    
+    auto x1_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(x1))), randgen);
+    auto x2_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(x2))), randgen);
+    auto x_e = hsm2k.add_ciphertexts(pk, x1_e, x2_e, randgen);
+    auto x_e_square = ciphertext_multiplication(hsm2k, randgen, pk, lk, threshold_parties, x1_e, x1_e, x2_e, x2_e);
+
+    auto a_x_square = hsm2k.scal_ciphertexts(pk, x_e_square, BICYCL::Mpz((long)a), randgen);
+    auto b_x = hsm2k.scal_ciphertexts(pk, x_e, BICYCL::Mpz((long)b), randgen);
+
+    auto result_e = hsm2k.add_ciphertexts(
+        pk, 
+        a_x_square, 
+        hsm2k.add_ciphertexts(
+            pk, 
+            b_x, 
+            hsm2k.encrypt(
+                pk, 
+                BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((long)c)), 
+                randgen
+            ), 
+            randgen
+        ), 
+        randgen
+    );
+
+    // Decrypt result
+    BICYCL::CL_HSM2k::ClearText result_d = decrypt(hsm2k, result_e, lk, threshold_parties);
+    int result_value = (int)mpz_get_ui(result_d.operator const __mpz_struct*());
+
+    std::cout << "x = " << x1 + x2 << ", a = " << a << ", b = " << b << ", c = " << c << std::endl;
+    std::cout << "Homomorphic two-degree polynomial evaluation result: " << result_value << std::endl;
+}
+
 void homomorphic_operations() {
     // 1) Setup
     std::string seed = "1157920892373161954235709850086879078528375642790749043";   // seed should be kept secret in real-world usage
@@ -344,6 +382,9 @@ void homomorphic_operations() {
     auto x2_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(x2))), randgen);
     auto y2_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(y2))), randgen);
     ciphertext_multiplication(hsm2k, randgen, pk, lk, threshold_parties, x1_e, y1_e, x2_e, y2_e);
+
+    // 4) 2-degree Polynomial Evaluation
+    two_degree_polynomial_evaluation(hsm2k, randgen, pk, lk, threshold_parties);
 }
 
 int main() {
