@@ -1,5 +1,3 @@
-#include "bicycl/CL_HSM2k.hpp"
-#include "bicycl/gmp_extras.hpp"
 #include <iostream>
 #include <bicycl.hpp>
 #include <gmp.h>
@@ -269,15 +267,11 @@ BICYCL::CL_HSM2k::ClearText decrypt(BICYCL::CL_HSM2k& hsm2k, BICYCL::CL_HSM2k::C
 }
 
 // Ciphertext Multiplication: You can multiply two ciphertexts homomorphically.
-void ciphertext_multiplication(BICYCL::CL_HSM2k& hsm2k, BICYCL::RandGen& randgen, BICYCL::CL_HSM2k::PublicKey& pk, LISSKeyGen& lk, std::vector<int>& threshold_parties) {
+BICYCL::CL_HSM2k::CipherText ciphertext_multiplication(
+    BICYCL::CL_HSM2k& hsm2k, BICYCL::RandGen& randgen, BICYCL::CL_HSM2k::PublicKey& pk, LISSKeyGen& lk, std::vector<int>& threshold_parties,
+    BICYCL::CL_HSM2k::CipherText& x1_e, BICYCL::CL_HSM2k::CipherText& y1_e, BICYCL::CL_HSM2k::CipherText& x2_e, BICYCL::CL_HSM2k::CipherText& y2_e
+) {
     std::cout << "\nCiphertext Multiplication:" << std::endl;
-    
-    // Secret shares of x = 20 and y = 30
-    int x1 = 5, y1 = 10, x2 = 15, y2 = 20;
-    auto x1_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(x1))), randgen);
-    auto y1_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(y1))), randgen);
-    auto x2_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(x2))), randgen);
-    auto y2_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(y2))), randgen);
 
     // Beaver's triplet for given threshold parties
     auto a1_e = lk.beaver_triplet_a[threshold_parties[0]][threshold_parties[1]];
@@ -316,8 +310,9 @@ void ciphertext_multiplication(BICYCL::CL_HSM2k& hsm2k, BICYCL::RandGen& randgen
     auto r = hsm2k.add_ciphertexts(pk, r1_e, r2_e, randgen);
     auto r_d = mpz_get_ui(decrypt(hsm2k, r, lk, threshold_parties).operator const __mpz_struct *());
 
-    std::cout << "x = " << x1 + x2 << ", y = " << y1 + y2 << std::endl;
     std::cout << "Final result (r): " << r_d << std::endl;
+
+    return r;
 }
 
 void homomorphic_operations() {
@@ -342,7 +337,13 @@ void homomorphic_operations() {
     scalar_multiplication(hsm2k, randgen, sk, pk);
 
     // 3) Ciphertext Multiplication
-    ciphertext_multiplication(hsm2k, randgen, pk, lk, threshold_parties);
+    // Secret shares of x = 20 and y = 30
+    int x1 = 5, y1 = 10, x2 = 15, y2 = 20;
+    auto x1_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(x1))), randgen);
+    auto y1_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(y1))), randgen);
+    auto x2_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(x2))), randgen);
+    auto y2_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(y2))), randgen);
+    ciphertext_multiplication(hsm2k, randgen, pk, lk, threshold_parties, x1_e, y1_e, x2_e, y2_e);
 }
 
 int main() {
