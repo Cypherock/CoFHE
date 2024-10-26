@@ -1,3 +1,5 @@
+#include "bicycl/CL_HSM2k.hpp"
+#include "bicycl/gmp_extras.hpp"
 #include <iostream>
 #include <bicycl.hpp>
 #include <gmp.h>
@@ -54,6 +56,9 @@ typedef struct {
     BICYCL::CL_HSM2k::PublicKey* pk;
     std::vector<BICYCL::Mpz> shares;
     ISP isp;
+    std::vector<std::vector<BICYCL::CL_HSM2k::CipherText> > beaver_triplet_a;
+    std::vector<std::vector<BICYCL::CL_HSM2k::CipherText> > beaver_triplet_b;
+    std::vector<std::vector<BICYCL::CL_HSM2k::CipherText> > beaver_triplet_c;
 } LISSKeyGen;
 
 // Function to generate a random matrix M (d x e) with 0s and 1s
@@ -166,9 +171,57 @@ LISSKeyGen keygen(BICYCL::CL_HSM2k& hsm2k, BICYCL::RandGen& randgen, AccessStruc
     
     std::vector<BICYCL::Mpz> shares = compute_shares(isp, rho);
 
+    // Beaver's Triplet generation: 
+    int a = 15, b = 35, c = a * b;
+    int a01 = 5, a10 = 10, b01 = 15, b10 = 20, c01 = c / 5, c10 = c - c01;  // for [0,1] threshold
+    int a02 = 6, a20 = 9, b02 = 16, b20 = 19, c02 = c / 3, c20 = c - c02;   // for [0,2] threshold
+    int a12 = 7, a21 = 8, b12 = 17, b21 = 18, c12 = c / 7, c21 = c - c12;   // for [1,2] threshold
+
+    auto a01_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(a01))), randgen);
+    auto a10_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(a10))), randgen);
+    auto a02_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(a02))), randgen);
+    auto a20_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(a20))), randgen);
+    auto a12_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(a12))), randgen);
+    auto a21_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(a21))), randgen);
+    
+    auto b01_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(b01))), randgen);
+    auto b10_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(b10))), randgen);
+    auto b02_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(b02))), randgen);
+    auto b20_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(b20))), randgen);
+    auto b12_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(b12))), randgen);
+    auto b21_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(b21))), randgen);
+
+    auto c01_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(c01))), randgen);
+    auto c10_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(c10))), randgen);
+    auto c02_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(c02))), randgen);
+    auto c20_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(c20))), randgen);
+    auto c12_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(c12))), randgen);
+    auto c21_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(c21))), randgen);
+
+    auto dummy = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(0))), randgen);
+
+    std::vector<std::vector<BICYCL::CL_HSM2k::CipherText> > beaver_triplet_a{
+        {dummy, a01_e, a02_e},
+        {a10_e, dummy, a12_e},
+        {a20_e, a21_e, dummy},
+    };
+    std::vector<std::vector<BICYCL::CL_HSM2k::CipherText> > beaver_triplet_b{
+        {dummy, b01_e, b02_e},
+        {b10_e, dummy, b12_e},
+        {b20_e, b21_e, dummy},
+    };
+    std::vector<std::vector<BICYCL::CL_HSM2k::CipherText> > beaver_triplet_c{
+        {dummy, c01_e, c02_e},
+        {c10_e, dummy, c12_e},
+        {c20_e, c21_e, dummy},
+    };
+
     LISSKeyGen keygen;
     keygen.shares = shares;
     keygen.isp = isp;
+    keygen.beaver_triplet_a = beaver_triplet_a;
+    keygen.beaver_triplet_b = beaver_triplet_b;
+    keygen.beaver_triplet_c = beaver_triplet_c;
 
     return keygen;
 }
@@ -226,18 +279,13 @@ void ciphertext_multiplication(BICYCL::CL_HSM2k& hsm2k, BICYCL::RandGen& randgen
     auto x2_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(x2))), randgen);
     auto y2_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(y2))), randgen);
 
-    // Beaver's Triplet generation
-    int a1 = 5, a2 = 10, b1 = 15, b2 = 20;
-    auto a1_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(a1))), randgen);
-    auto a2_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(a2))), randgen);
-    auto b1_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(b1))), randgen);
-    auto b2_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(b2))), randgen);
-
-    // Calculate c = (a1 + a2) * (b1 + b2)
-    int c = (a1 + a2) * (b1 + b2);
-    int c1 = c / 5, c2 = c - c1;
-    auto c1_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(c1))), randgen);
-    auto c2_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(c2))), randgen);
+    // Beaver's triplet for given threshold parties
+    auto a1_e = lk.beaver_triplet_a[threshold_parties[0]][threshold_parties[1]];
+    auto a2_e = lk.beaver_triplet_a[threshold_parties[1]][threshold_parties[0]];
+    auto b1_e = lk.beaver_triplet_b[threshold_parties[0]][threshold_parties[1]];
+    auto b2_e = lk.beaver_triplet_b[threshold_parties[1]][threshold_parties[0]];
+    auto c1_e = lk.beaver_triplet_c[threshold_parties[0]][threshold_parties[1]];
+    auto c2_e = lk.beaver_triplet_c[threshold_parties[1]][threshold_parties[0]];
 
     // Calculate e and d values
     auto e1 = hsm2k.add_ciphertexts(pk, x1_e, hsm2k.scal_ciphertexts(pk, a1_e, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(-1))), randgen), randgen);
