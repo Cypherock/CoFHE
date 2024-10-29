@@ -57,12 +57,10 @@ typedef struct {
 } ISP;
 
 typedef struct {
-    AccessStructure A;
-    Matrix<BICYCL::Mpz> secret_key_shares;
-    Matrix<BICYCL::CL_HSM2k::CipherText> beaver_triplet_a_shares;
-    Matrix<BICYCL::CL_HSM2k::CipherText> beaver_triplet_b_shares;
-    Matrix<BICYCL::CL_HSM2k::CipherText> beaver_triplet_c_shares;
-} LISSKeyGen;
+    Matrix<BICYCL::CL_HSM2k::CipherText> a_shares;
+    Matrix<BICYCL::CL_HSM2k::CipherText> b_shares;
+    Matrix<BICYCL::CL_HSM2k::CipherText> c_shares;
+} BeaversTriplet;
 
 // Function to compute the M_OR matrix
 Matrix<int> compute_M_OR(const Matrix<int> &Ma, const Matrix<int> &Mb) {
@@ -215,8 +213,7 @@ Matrix<BICYCL::Mpz> compute_shares(ISP& isp, Array<BICYCL::Mpz>& rho) {
     Matrix<int> Sie = isp.Sie;
     int rows = isp.rows, cols = isp.cols;
 
-    std::cout << "Shares: " << std::endl;
-    Matrix<BICYCL::Mpz> sharesi;
+    Matrix<BICYCL::Mpz> shares;
     for (auto Sp : Sie) {
         Array<BICYCL::Mpz> si;
         for (int i : Sp) {
@@ -228,14 +225,12 @@ Matrix<BICYCL::Mpz> compute_shares(ISP& isp, Array<BICYCL::Mpz>& rho) {
                     sij.add(sij, sij, mult);
                 }
             }
-            std::cout << sij << ", ";
             si.push_back(sij);
         }
-        std::cout << std::endl;
-        sharesi.push_back(si);
+        shares.push_back(si);
     }
     std::cout << std::endl;
-    return sharesi;
+    return shares;
 }
 
 Matrix<BICYCL::Mpz> get_shares(BICYCL::CL_HSM2k& hsm2k, BICYCL::RandGen& randgen, ISP& isp, BICYCL::Mpz secret) {
@@ -243,7 +238,7 @@ Matrix<BICYCL::Mpz> get_shares(BICYCL::CL_HSM2k& hsm2k, BICYCL::RandGen& randgen
     return compute_shares(isp, rho);
 }
 
-Matrix<BICYCL::CL_HSM2k::CipherText> encrypt_shares(BICYCL::CL_HSM2k& hsm2k, BICYCL::RandGen& randgen, BICYCL::CL_HSM2k::PublicKey& pk, Matrix<BICYCL::Mpz>& shares) {
+Matrix<BICYCL::CL_HSM2k::CipherText> encrypt_shares(BICYCL::CL_HSM2k& hsm2k, BICYCL::RandGen& randgen, BICYCL::CL_HSM2k::PublicKey& pk, Matrix<BICYCL::Mpz> shares) {
     Matrix<BICYCL::CL_HSM2k::CipherText> encrypted_shares(shares.size(), std::vector<BICYCL::CL_HSM2k::CipherText>(shares[0].size()));
     for (int i = 0; i < shares.size(); i++) {
         for (int j = 0; j < shares[0].size(); j++) {
@@ -258,11 +253,10 @@ Array<BICYCL::Mpz> compute_lambda(int t) {
     for (int i = 0; i < t; i++) {
         lambda.push_back(BICYCL::Mpz((long)(-1)));
     }
-
     return lambda;
 }
 
-BICYCL::QFI compute_d(BICYCL::CL_HSM2k& hsm2k, Array<BICYCL::QFI>& ds, Array<BICYCL::Mpz>& lambda, Array<int>& threshold_parties) {
+BICYCL::QFI compute_d(BICYCL::CL_HSM2k& hsm2k, Array<BICYCL::QFI>& ds, Array<BICYCL::Mpz>& lambda) {
     BICYCL::QFI d;
     for (int i = 0; i < ds.size(); i++) {
         BICYCL::QFI r;
@@ -283,25 +277,6 @@ int get_threshold_combination_number(Array<int> threshold_parties) {
     }
 }
 
-LISSKeyGen keygen(BICYCL::CL_HSM2k& hsm2k, BICYCL::RandGen& randgen, AccessStructure& A, BICYCL::CL_HSM2k::SecretKey& sk, BICYCL::CL_HSM2k::PublicKey& pk) {
-    ISP isp = generate_isp(A);
-
-    // Beaver's Triplet generation: 
-    int a = 15, b = 35, c = a * b;
-    auto a_shares = get_shares(hsm2k, randgen, isp, BICYCL::Mpz((unsigned long)(a)));
-    auto b_shares = get_shares(hsm2k, randgen, isp, BICYCL::Mpz((unsigned long)(b)));
-    auto c_shares = get_shares(hsm2k, randgen, isp, BICYCL::Mpz((unsigned long)(c)));
-
-    LISSKeyGen keygen;
-    keygen.A = A;
-    keygen.secret_key_shares = get_shares(hsm2k, randgen, isp, sk);
-    keygen.beaver_triplet_a_shares = encrypt_shares(hsm2k, randgen, pk, a_shares);
-    keygen.beaver_triplet_b_shares = encrypt_shares(hsm2k, randgen, pk, b_shares);;
-    keygen.beaver_triplet_c_shares = encrypt_shares(hsm2k, randgen, pk, c_shares);;
-
-    return keygen;
-}
-
 BICYCL::QFI partDecrypt(BICYCL::CL_HSM2k& hsm2k, BICYCL::CL_HSM2k::CipherText& ct, BICYCL::Mpz& ski) {
     BICYCL::QFI di;
     hsm2k.Cl_G().nupow (di, ct.c1(), ski);   // di = c1^sj
@@ -311,116 +286,104 @@ BICYCL::QFI partDecrypt(BICYCL::CL_HSM2k& hsm2k, BICYCL::CL_HSM2k::CipherText& c
     return di;
 }
 
-BICYCL::CL_HSM2k::ClearText finalDecrypt(BICYCL::CL_HSM2k& hsm2k, BICYCL::CL_HSM2k::CipherText& ct, Array<BICYCL::QFI>& ds, LISSKeyGen& lk, Array<int>& threshold_parties) {
+BICYCL::CL_HSM2k::ClearText finalDecrypt(BICYCL::CL_HSM2k& hsm2k, BICYCL::CL_HSM2k::CipherText& ct, Array<BICYCL::QFI>& ds, Matrix<BICYCL::Mpz>& sk_shares) {
     
-    Array<BICYCL::Mpz> lambda = compute_lambda(lk.A.t);
+    Array<BICYCL::Mpz> lambda = compute_lambda(ds.size());
 
-    BICYCL::QFI d = compute_d(hsm2k, ds, lambda, threshold_parties);
+    BICYCL::QFI d = compute_d(hsm2k, ds, lambda);
 
     BICYCL::QFI r;
     hsm2k.Cl_Delta().nucompinv (r, ct.c2(), d); /* c2 . d^-1 */
 
-    auto v = hsm2k.dlog_in_F(r);
-    return BICYCL::CL_HSM2k::ClearText(hsm2k, v);
+    return BICYCL::CL_HSM2k::ClearText(hsm2k, hsm2k.dlog_in_F(r));
 }
 
-BICYCL::CL_HSM2k::ClearText decrypt(BICYCL::CL_HSM2k& hsm2k, BICYCL::CL_HSM2k::CipherText& ct, LISSKeyGen& lk, Array<int>& threshold_parties) {
-    auto sk_shares = lk.secret_key_shares;
-
+BICYCL::CL_HSM2k::ClearText decrypt(BICYCL::CL_HSM2k& hsm2k, BICYCL::CL_HSM2k::CipherText& ct, Matrix<BICYCL::Mpz>& sk_shares, Array<int>& threshold_parties) {
     int threshold_combination_number = get_threshold_combination_number(threshold_parties);
+    
     Array<BICYCL::QFI> ds(threshold_parties.size());
     for (int i = 0; i < threshold_parties.size(); i++) {
         ds[i] = partDecrypt(hsm2k, ct, sk_shares[threshold_combination_number][i]);
     }
 
-    return finalDecrypt(hsm2k, ct, ds, lk, threshold_parties);
+    return finalDecrypt(hsm2k, ct, ds, sk_shares);
 }
 
 // Ciphertext Multiplication: You can multiply two ciphertexts homomorphically.
 BICYCL::CL_HSM2k::CipherText ciphertext_multiplication(
-    BICYCL::CL_HSM2k& hsm2k, BICYCL::RandGen& randgen, BICYCL::CL_HSM2k::PublicKey& pk, LISSKeyGen& lk, Array<int>& threshold_parties,
-    BICYCL::CL_HSM2k::CipherText& x1_e, BICYCL::CL_HSM2k::CipherText& y1_e, BICYCL::CL_HSM2k::CipherText& x2_e, BICYCL::CL_HSM2k::CipherText& y2_e
+    BICYCL::CL_HSM2k& hsm2k, BICYCL::RandGen& randgen, BICYCL::CL_HSM2k::PublicKey& pk, Array<int>& threshold_parties,
+    Matrix<BICYCL::Mpz>& sk_shares, Matrix<BICYCL::CL_HSM2k::CipherText>& x_shares, Matrix<BICYCL::CL_HSM2k::CipherText>& y_shares, BeaversTriplet& beavers_triplet
 ) {
-    std::cout << "\nCiphertext Multiplication:" << std::endl;
     // Lambda values: beavers triplet shares are not additive. They are LISS shares and hence are reconstructed using lambda values
-    auto lambda = compute_lambda(lk.A.t);
+    auto lambda = compute_lambda(threshold_parties.size());
     int threshold_combination_number = get_threshold_combination_number(threshold_parties);
 
-    // Beaver's triplet for given threshold parties
-    auto a1_e = hsm2k.scal_ciphertexts(pk, lk.beaver_triplet_a_shares[threshold_combination_number][0], lambda[0], randgen);
-    auto b1_e = hsm2k.scal_ciphertexts(pk, lk.beaver_triplet_b_shares[threshold_combination_number][0], lambda[0], randgen);
-    auto c1_e = hsm2k.scal_ciphertexts(pk, lk.beaver_triplet_c_shares[threshold_combination_number][0], lambda[0], randgen);
-    auto a2_e = hsm2k.scal_ciphertexts(pk, lk.beaver_triplet_a_shares[threshold_combination_number][1], lambda[1], randgen);
-    auto b2_e = hsm2k.scal_ciphertexts(pk, lk.beaver_triplet_b_shares[threshold_combination_number][1], lambda[1], randgen);
-    auto c2_e = hsm2k.scal_ciphertexts(pk, lk.beaver_triplet_c_shares[threshold_combination_number][1], lambda[1], randgen);
+    BICYCL::CL_HSM2k::CipherText e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((long)(0))), randgen);
+    BICYCL::CL_HSM2k::CipherText d = e; //hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((long)(0))), randgen);
+    for (int i = 0; i < threshold_parties.size(); i++) {
+        auto xi = hsm2k.scal_ciphertexts(pk, x_shares[threshold_combination_number][i], lambda[i], randgen);
+        auto ai = hsm2k.scal_ciphertexts(pk, beavers_triplet.a_shares[threshold_combination_number][i], lambda[i], randgen);
+        auto ei = hsm2k.add_ciphertexts(pk, xi, hsm2k.scal_ciphertexts(pk, ai, BICYCL::Mpz((long)(-1)), randgen), randgen);
+        e = hsm2k.add_ciphertexts(pk, e, ei, randgen);
 
+        auto yi = hsm2k.scal_ciphertexts(pk, y_shares[threshold_combination_number][i], lambda[i], randgen);
+        auto bi = hsm2k.scal_ciphertexts(pk, beavers_triplet.b_shares[threshold_combination_number][i], lambda[i], randgen);
+        auto di = hsm2k.add_ciphertexts(pk, yi, hsm2k.scal_ciphertexts(pk, bi, BICYCL::Mpz((long)(-1)), randgen), randgen);
+        d = hsm2k.add_ciphertexts(pk, d, di, randgen);
+    }
 
-    // Calculate e and d values
-    auto e1 = hsm2k.add_ciphertexts(pk, x1_e, hsm2k.scal_ciphertexts(pk, a1_e, BICYCL::Mpz((long)(-1)), randgen), randgen);
-    auto d1 = hsm2k.add_ciphertexts(pk, y1_e, hsm2k.scal_ciphertexts(pk, b1_e, BICYCL::Mpz((long)(-1)), randgen), randgen);
-    auto e2 = hsm2k.add_ciphertexts(pk, x2_e, hsm2k.scal_ciphertexts(pk, a2_e, BICYCL::Mpz((long)(-1)), randgen), randgen);
-    auto d2 = hsm2k.add_ciphertexts(pk, y2_e, hsm2k.scal_ciphertexts(pk, b2_e, BICYCL::Mpz((long)(-1)), randgen), randgen);
-
-    // Combine e and d values
-    auto e = hsm2k.add_ciphertexts(pk, e1, e2, randgen);
-    auto d = hsm2k.add_ciphertexts(pk, d1, d2, randgen);
-    auto e_d = decrypt(hsm2k, e, lk, threshold_parties);
-    auto d_d = decrypt(hsm2k, d, lk, threshold_parties);
+    auto e_d = decrypt(hsm2k, e, sk_shares, threshold_parties);
+    auto d_d = decrypt(hsm2k, d, sk_shares, threshold_parties);
     int e_d_int = (int)mpz_get_ui(e_d.operator const __mpz_struct*());
     int d_d_int = (int)mpz_get_ui(d_d.operator const __mpz_struct*());
 
-    // Calculate r1 and r2
-    auto r1_e = hsm2k.add_ciphertexts(
-        pk, 
-        c1_e,
-        hsm2k.add_ciphertexts(
-            pk,
+    BICYCL::CL_HSM2k::CipherText r = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((long)(0))), randgen);
+    for (int i = 0; i < threshold_parties.size(); i++) {
+        auto ai = hsm2k.scal_ciphertexts(pk, beavers_triplet.a_shares[threshold_combination_number][i], lambda[i], randgen);
+        auto bi = hsm2k.scal_ciphertexts(pk, beavers_triplet.b_shares[threshold_combination_number][i], lambda[i], randgen);
+        auto ci = hsm2k.scal_ciphertexts(pk, beavers_triplet.c_shares[threshold_combination_number][i], lambda[i], randgen);
+        auto ri = hsm2k.add_ciphertexts(
+            pk, 
+            ci,
             hsm2k.add_ciphertexts(
                 pk, 
-                hsm2k.scal_ciphertexts(pk, b1_e, e_d, randgen),
-                hsm2k.scal_ciphertexts(pk, a1_e, d_d, randgen), 
+                hsm2k.scal_ciphertexts(pk, bi, e_d, randgen),
+                hsm2k.scal_ciphertexts(pk, ai, d_d, randgen), 
                 randgen
-            ),
-            hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(e_d_int * d_d_int))), randgen), 
+            ), 
             randgen
-        ), 
-        randgen
-    );
+        );
+        r = hsm2k.add_ciphertexts(pk, r, ri, randgen);
+    }
 
-    auto r2_e = hsm2k.add_ciphertexts(
+    r = hsm2k.add_ciphertexts(
         pk, 
-        c2_e,
-        hsm2k.add_ciphertexts(
-            pk, 
-            hsm2k.scal_ciphertexts(pk, b2_e, e_d, randgen),
-            hsm2k.scal_ciphertexts(pk, a2_e, d_d, randgen), 
-            randgen
-        ), 
+        r, 
+        hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(e_d_int * d_d_int))), randgen),
         randgen
     );
-
-    // Final result of encrypted multiplication
-    auto r = hsm2k.add_ciphertexts(pk, r1_e, r2_e, randgen);
-    auto r_d = mpz_get_ui(decrypt(hsm2k, r, lk, threshold_parties).operator const __mpz_struct *());
-
-    std::cout << "Final result (r): " << r_d << std::endl;
 
     return r;
 }
 
 // 2-degree Polynomial Evaluation: ax^2 + bx + c where a,b,c are constants and x is ciphertext
-void two_degree_polynomial_evaluation(BICYCL::CL_HSM2k& hsm2k, BICYCL::RandGen& randgen, BICYCL::CL_HSM2k::PublicKey& pk, LISSKeyGen& lk, Array<int>& threshold_parties) {
-    std::cout << "\nHomomorphic Two-Degree Polynomial Evaluation:" << std::endl;
-
-    int a = 9, b = 10, c = 7, x1 = 3, x2 = 7;
+BICYCL::CL_HSM2k::CipherText two_degree_polynomial_evaluation(BICYCL::CL_HSM2k& hsm2k, BICYCL::RandGen& randgen, BICYCL::CL_HSM2k::PublicKey& pk, Array<int>& threshold_parties,
+    Matrix<BICYCL::Mpz>& sk_shares, Matrix<BICYCL::CL_HSM2k::CipherText>& x_shares, BeaversTriplet& beavers_triplet, int a, int b, int c
+) {
     
-    auto x1_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(x1))), randgen);
-    auto x2_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(x2))), randgen);
-    auto x_e = hsm2k.add_ciphertexts(pk, x1_e, x2_e, randgen);
-    auto x_e_square = ciphertext_multiplication(hsm2k, randgen, pk, lk, threshold_parties, x1_e, x1_e, x2_e, x2_e);
+    int threshold_combination_number = get_threshold_combination_number(threshold_parties);
+    Array<BICYCL::Mpz> lambda = compute_lambda(threshold_parties.size());
 
-    auto a_x_square = hsm2k.scal_ciphertexts(pk, x_e_square, BICYCL::Mpz((unsigned long)a), randgen);
-    auto b_x = hsm2k.scal_ciphertexts(pk, x_e, BICYCL::Mpz((unsigned long)b), randgen);
+    BICYCL::CL_HSM2k::CipherText x = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((long)(0))), randgen);
+    for (int i = 0; i < threshold_parties.size(); i++) {
+        auto xi = hsm2k.scal_ciphertexts(pk, x_shares[threshold_combination_number][i], lambda[i], randgen);
+        x = hsm2k.add_ciphertexts(pk, x, xi, randgen);
+    }
+
+    auto x_square = ciphertext_multiplication(hsm2k, randgen, pk, threshold_parties, sk_shares, x_shares, x_shares, beavers_triplet);
+
+    auto a_x_square = hsm2k.scal_ciphertexts(pk, x_square, BICYCL::Mpz((long)a), randgen);
+    auto b_x = hsm2k.scal_ciphertexts(pk, x, BICYCL::Mpz((long)b), randgen);
 
     auto result_e = hsm2k.add_ciphertexts(
         pk, 
@@ -438,12 +401,7 @@ void two_degree_polynomial_evaluation(BICYCL::CL_HSM2k& hsm2k, BICYCL::RandGen& 
         randgen
     );
 
-    // Decrypt result
-    BICYCL::CL_HSM2k::ClearText result_d = decrypt(hsm2k, result_e, lk, threshold_parties);
-    int result_value = (int)mpz_get_ui(result_d.operator const __mpz_struct*());
-
-    std::cout << "x = " << x1 + x2 << ", a = " << a << ", b = " << b << ", c = " << c << std::endl;
-    std::cout << "Homomorphic two-degree polynomial evaluation result: " << result_value << std::endl;
+    return result_e;
 }
 
 void homomorphic_operations() {
@@ -457,9 +415,16 @@ void homomorphic_operations() {
     BICYCL::CL_HSM2k::SecretKey sk = hsm2k.keygen(randgen);
     BICYCL::CL_HSM2k::PublicKey pk = hsm2k.keygen(sk);
 
-    AccessStructure A(2, 3);
-    Array<int> threshold_parties{0,2};
-    LISSKeyGen lk = keygen(hsm2k, randgen, A, sk, pk);
+    AccessStructure A(5, 8);
+    Array<int> threshold_parties{0,2,4,5,7};
+    auto isp = generate_isp(A);
+    auto sk_shares = get_shares(hsm2k, randgen, isp, sk);
+
+    int a = 15, b = 35, c = a * b;
+    BeaversTriplet beavers_triplet;
+    beavers_triplet.a_shares = encrypt_shares(hsm2k, randgen, pk, get_shares(hsm2k, randgen, isp, BICYCL::Mpz((long)(a))));
+    beavers_triplet.b_shares = encrypt_shares(hsm2k, randgen, pk, get_shares(hsm2k, randgen, isp, BICYCL::Mpz((long)(b))));
+    beavers_triplet.c_shares = encrypt_shares(hsm2k, randgen, pk, get_shares(hsm2k, randgen, isp, BICYCL::Mpz((long)(c))));
     
     // 2) Ciphertext Addition
     ciphertext_addition(hsm2k,randgen, sk, pk);
@@ -471,22 +436,32 @@ void homomorphic_operations() {
     std::cout << "Decryption using Part Decrypt: " << std::endl;
     int value = 39;
     auto value_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(value))), randgen);
-    auto value_d = decrypt(hsm2k, value_e, lk, threshold_parties);
+    auto value_d = decrypt(hsm2k, value_e, sk_shares, threshold_parties);
     int value_d_int = (int)mpz_get_ui(value_d.operator const __mpz_struct*());
     std::cout << "Original value: " << value << std::endl;
     std::cout << "Decrypted value: " << value_d_int << std::endl;
 
+    
     // 3) Ciphertext Multiplication
-    // Secret shares of x = 20 and y = 30
-    int x1 = 3, y1 = 10, x2 = 15, y2 = 2;
-    auto x1_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(x1))), randgen);
-    auto y1_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(y1))), randgen);
-    auto x2_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(x2))), randgen);
-    auto y2_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(y2))), randgen);
-    ciphertext_multiplication(hsm2k, randgen, pk, lk, threshold_parties, x1_e, y1_e, x2_e, y2_e);
-
+    std::cout << "\nCiphertext Multiplication:" << std::endl;
+    int x = 12, y = 17;
+    auto x_shares = encrypt_shares(hsm2k, randgen, pk, get_shares(hsm2k, randgen, isp, BICYCL::Mpz((long)(x))));
+    auto y_shares = encrypt_shares(hsm2k, randgen, pk, get_shares(hsm2k, randgen, isp, BICYCL::Mpz((long)(y))));
+    
+    auto result_mul = ciphertext_multiplication(hsm2k, randgen, pk, threshold_parties, sk_shares, x_shares, y_shares, beavers_triplet);
+    
+    auto result_mul_value = mpz_get_ui(decrypt(hsm2k, result_mul, sk_shares, threshold_parties).operator const __mpz_struct *());
+    std::cout << "Final result (r): " << result_mul_value << std::endl;
+    
+    
     // 4) 2-degree Polynomial Evaluation
-    two_degree_polynomial_evaluation(hsm2k, randgen, pk, lk, threshold_parties);
+    std::cout << "\nHomomorphic Two-Degree Polynomial Evaluation:" << std::endl;
+    
+    auto result_2_deg = two_degree_polynomial_evaluation(hsm2k, randgen, pk, threshold_parties, sk_shares, x_shares, beavers_triplet, a, b, c);
+    
+    int result_2_deg_value = (int)mpz_get_ui(decrypt(hsm2k, result_2_deg, sk_shares, threshold_parties).operator const __mpz_struct*());
+    std::cout << "x = " << x << ", a = " << a << ", b = " << b << ", c = " << c << std::endl;
+    std::cout << "Homomorphic two-degree polynomial evaluation result: " << result_2_deg_value << std::endl;
 }
 
 int main() {
