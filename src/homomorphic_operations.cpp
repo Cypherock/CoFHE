@@ -46,7 +46,7 @@ void scalar_multiplication(BICYCL::CL_HSM2k& hsm2k, BICYCL::RandGen& randgen, BI
 struct AccessStructure {
     int t;
     int n;
-    AccessStructure(int t, int n) : t(t), n(n) {}
+    AccessStructure(int t = 0, int n = 0) : t(t), n(n) {}
 };
 
 typedef struct {
@@ -57,34 +57,135 @@ typedef struct {
 } ISP;
 
 typedef struct {
-    ISP isp;
+    AccessStructure A;
     Matrix<BICYCL::Mpz> secret_key_shares;
     Matrix<BICYCL::CL_HSM2k::CipherText> beaver_triplet_a_shares;
     Matrix<BICYCL::CL_HSM2k::CipherText> beaver_triplet_b_shares;
     Matrix<BICYCL::CL_HSM2k::CipherText> beaver_triplet_c_shares;
 } LISSKeyGen;
 
+// Function to compute the M_OR matrix
+Matrix<int> compute_M_OR(const Matrix<int> &Ma, const Matrix<int> &Mb) {
+    int da = Ma.size();
+    int ea = Ma[0].size();
+    int db = Mb.size();
+    int eb = Mb[0].size();
+    
+    // Dimensions for M_OR
+    int M_OR_rows = da + db;
+    int M_OR_cols = ea + eb - 1;
+    
+    // Initialize M_OR with all zeroes
+    Matrix<int> M_OR(M_OR_rows, std::vector<int>(M_OR_cols, 0));
+    
+    // Fill in the first column with concatenated c(a) and c(b)
+    for (int i = 0; i < da; ++i) {
+        M_OR[i][0] = Ma[i][0];
+    }
+    for (int i = 0; i < db; ++i) {
+        M_OR[da + i][0] = Mb[i][0];
+    }
+    
+    // Fill the remaining columns for Ma with db trailing zeros
+    for (int i = 0; i < da; ++i) {
+        for (int j = 1; j < ea; ++j) {
+            M_OR[i][j] = Ma[i][j];
+        }
+    }
+    
+    // Fill the remaining columns for Mb with da leading zeros
+    for (int i = 0; i < db; ++i) {
+        for (int j = 1; j < eb; ++j) {
+            M_OR[da + i][ea + j - 1] = Mb[i][j];
+        }
+    }
+    
+    return M_OR;
+}
 
+// Function to compute the M_AND matrix<int>
+Matrix<int> compute_M_AND(const Matrix<int> &Ma, const Matrix<int> &Mb) {
+    int da = Ma.size();
+    int ea = Ma[0].size();
+    int db = Mb.size();
+    int eb = Mb[0].size();
+    
+    // Dimensions for M_OR
+    int M_AND_rows = da + db;
+    int M_AND_cols = ea + eb;
+    
+    // Initialize M_OR with all zeroes
+    Matrix<int> M_AND(M_AND_rows, std::vector<int>(M_AND_cols, 0));
+    
+    // Fill in the first column with c(a) following db zeros & second column with c(a) concatenated c(b)
+    for (int i = 0; i < da; ++i) {
+        M_AND[i][0] = Ma[i][0];
+        M_AND[i][1] = Ma[i][0];
+    }
+    for (int i = 0; i < db; ++i) {
+        M_AND[da + i][1] = Mb[i][0];
+    }
+    
+    // Fill the remaining columns for Ma with db trailing zeros
+    for (int i = 0; i < da; ++i) {
+        for (int j = 1; j < ea; ++j) {
+            M_AND[i][j + 1] = Ma[i][j];
+        }
+    }
+    
+    // Fill the remaining columns for Mb with da leading zeros
+    for (int i = 0; i < db; ++i) {
+        for (int j = 1; j < eb; ++j) {
+            M_AND[da + i][ea + j] = Mb[i][j];
+        }
+    }
+    
+    return M_AND;
+}
+
+int nCr(int n, int r) {
+    double res = 1;
+    for(int i = 1; i <= r; i++){
+        res = res * (n - r + i) / i;
+    }
+    return res;
+}
+
+Matrix<int> generate_distribution_matrix_M(int n, int t, int threshold_combinations) {
+    Matrix<int> Mu{{1}};
+    Matrix<int> Mt = Mu;
+
+    for (int i = 1; i < t; i++) {
+        Mt = compute_M_AND(Mt, Mu);
+    }
+    
+    Matrix<int> M = Mt;
+    for (int i = 1; i < threshold_combinations; i++) {
+        M = compute_M_OR(M, Mt);
+    }
+    return M;
+}
+
+Matrix<int> generate_Sie(int n, int t) {
+    Matrix<int> Sie(n, Array<int>(n, -1));
+
+}
 
 // Function to generate a random matrix M (d x e) with 0s and 1s
 ISP generate_isp(AccessStructure& A) {
-    // @TODO: Implement code for generating M and Sie for any A
-
-    // this is temporary code
     int n = A.n, t = A.t;
 
-    // calculated M for 2 of 3 
-    Matrix<int> M{
-        {1,1,0,0},
-        {0,1,0,0},
-        {1,0,1,0},
-        {0,0,1,0},
-        {1,0,0,1},
-        {0,0,0,1}
-    };
-    // calculated Sie for above M: -1 is dummy
-    Matrix<int> Sie{{-1,0,2},{1,-1,4},{3,5,-1}};
+    int threshold_combinations = nCr(n, t);
+    Matrix<int> M = generate_distribution_matrix_M(n, t, threshold_combinations);
 
+    Matrix<int> Sie(threshold_combinations, Array<int>(t, 0));
+    int M_row_num = 0;
+    for (int i = 0; i < threshold_combinations; i++) {
+        for (int j = 0; j < t; j++) {
+            Sie[i][j] = M_row_num++;
+        }
+    }
+    
     ISP isp;
     isp.M = M;
     isp.Sie = Sie;
@@ -94,13 +195,18 @@ ISP generate_isp(AccessStructure& A) {
     return isp;
 }
 
-Array<BICYCL::Mpz> compute_rho(BICYCL::CL_HSM2k& hsm2k, BICYCL::Mpz& secret, BICYCL::RandGen& randgen, int e) {
+Array<BICYCL::Mpz> compute_rho(BICYCL::Mpz& secret, int e) {
+    std::string seed = "115792089237";   // seed should be kept secret in real-world usage
+    BICYCL::Mpz seed_mpz(seed);
+    BICYCL::RandGen randgen;
+    randgen.set_seed(seed_mpz);
+    BICYCL::CL_HSM2k hsm2k(9, 64, randgen, true);
+
     Array<BICYCL::Mpz> rho(e);
     rho[0] = secret;  // Set ρ(0) = s as per the algorithm
     for (int i = 1; i < e; i++) {
-        rho[i] = BICYCL::Mpz((unsigned long)(i));   // This should be random value in range [-2^(l0+λ), 2^(l0+λ)]^(e−1)
+        rho[i] = randgen.random_mpz (hsm2k.encrypt_randomness_bound()); //BICYCL::Mpz((unsigned long)(1 + std::rand() % 100000000));   // This should be random value in range [-2^(l0+λ), 2^(l0+λ)]^(e−1)
     }
-
     return rho;
 }
 
@@ -108,30 +214,6 @@ Matrix<BICYCL::Mpz> compute_shares(ISP& isp, Array<BICYCL::Mpz>& rho) {
     Matrix<int> M = isp.M;
     Matrix<int> Sie = isp.Sie;
     int rows = isp.rows, cols = isp.cols;
-
-    // Array<BICYCL::Mpz> shares;
-    /*
-        DOUBT:
-            For 2 of 3 Access Structure, we have 6 * 4 matrix of which multiple rows belong to one party 
-            i.e., one party owns multiple rows of a matrix. See Section 3.3.1 from https://cs.au.dk/fileadmin/site_files/cs/PhD/PhD_Dissertations__pdf/Thesis-RIT.pdf
-
-            As per algorithm 8 of https://eprint.iacr.org/2022/1143.pdf, we need to calculate n shares where n is supposed to be number of parties
-            As per algo, ith share, ski = (Mj . rho) where j = SieInverse(i) i.e, j is the row number which ith party owns BUT THERE CAN BE MULTIPLE ROWS
-            SO THE DOUBT IS WHICH ROW TO PICK
-
-            For now, shares are calculated as per rows, i.e., we calculate a share for each row so here multiple shares will belong to a single party
-    */
-    // for (int i = 0; i < rows; i++) {
-    //     BICYCL::Mpz ski(BICYCL::Mpz((unsigned long)(0)));
-    //     for (int j = 0; j < cols; j++) {
-    //          // ski = (Mj · rho)   Need to check what dot product here gives
-    //          // for now, corresponding elments are multiplied and then added to get a single value final result
-    //         BICYCL::Mpz mult;
-    //         ski.mul(mult, rho[j], BICYCL::Mpz((unsigned long)(M[i][j])));
-    //         ski.add(ski, ski, mult);
-    //     }
-    //     shares.push_back(ski);
-    // }
 
     std::cout << "Shares: " << std::endl;
     Matrix<BICYCL::Mpz> sharesi;
@@ -157,7 +239,7 @@ Matrix<BICYCL::Mpz> compute_shares(ISP& isp, Array<BICYCL::Mpz>& rho) {
 }
 
 Matrix<BICYCL::Mpz> get_shares(BICYCL::CL_HSM2k& hsm2k, BICYCL::RandGen& randgen, ISP& isp, BICYCL::Mpz secret) {
-    Array<BICYCL::Mpz> rho = compute_rho(hsm2k, secret, randgen, isp.cols);
+    Array<BICYCL::Mpz> rho = compute_rho(secret, isp.cols);
     return compute_shares(isp, rho);
 }
 
@@ -171,40 +253,35 @@ Matrix<BICYCL::CL_HSM2k::CipherText> encrypt_shares(BICYCL::CL_HSM2k& hsm2k, BIC
     return encrypted_shares;
 }
 
-Matrix<BICYCL::Mpz> compute_lambda(BICYCL::CL_HSM2k& hsm2k, LISSKeyGen& lk, Array<int>& threshold_parties) {
-    // @TODO: Implement code for computing lambda as per Access Structure and threshold_parties
+Array<BICYCL::Mpz> compute_lambda(int t) {
+    Array<BICYCL::Mpz> lambda{BICYCL::Mpz((unsigned long)(1))};
+    for (int i = 0; i < t; i++) {
+        lambda.push_back(BICYCL::Mpz((long)(-1)));
+    }
 
-    // calculate lambda for 2 of 3 Access Structure and [0,2] i.e., P1, P3 threshold parties 
-    Matrix<BICYCL::Mpz> lamda{
-        {BICYCL::Mpz((unsigned long)(0)), BICYCL::Mpz((unsigned long)(0)), BICYCL::Mpz((unsigned long)(1))},
-        {BICYCL::Mpz((unsigned long)(0)), BICYCL::Mpz((unsigned long)(0)), BICYCL::Mpz((unsigned long)(0))},
-        {BICYCL::Mpz((long)(-1)), BICYCL::Mpz((unsigned long)(0)), BICYCL::Mpz((unsigned long)(0))}
-    };
-    return lamda;
+    return lambda;
 }
 
-BICYCL::QFI compute_d(BICYCL::CL_HSM2k& hsm2k, Array<BICYCL::QFI>& ds, Matrix<BICYCL::Mpz>& lambda, Array<int>& threshold_parties) {
-    /*
-        Multiplied each part decrypt with the corresponsing lambda
-        Not sure if this correct. This will get clear once compute_shares doubt is resolved
-    */
-
-    BICYCL::QFI d;     // intializing with value 1, not sure if this correct
-    // for (int i = 0; i < ds.size(); i++) {
-    //     BICYCL::QFI r;
-    //     hsm2k.Cl_G().nupow(r, ds[i], lambda[threshold_parties[0]][threshold_parties[1]]);
-    //     for (int j = 0; j < ds[i].size(); j++) {
-    //         BICYCL::QFI dij = ds[i][j];
-    //         hsm2k.Cl_G().nupow(r, dij, lambda[Sie[i][j]]);
-    //         if (hsm2k.compact_variant())
-    //             hsm2k.from_Cl_DeltaK_to_Cl_Delta (r);
-    //         hsm2k.Cl_G().nucomp(d, d, r);
-    //     }
-    // }
+BICYCL::QFI compute_d(BICYCL::CL_HSM2k& hsm2k, Array<BICYCL::QFI>& ds, Array<BICYCL::Mpz>& lambda, Array<int>& threshold_parties) {
+    BICYCL::QFI d;
+    for (int i = 0; i < ds.size(); i++) {
+        BICYCL::QFI r;
+        hsm2k.Cl_G().nupow(r, ds[i], lambda[i]);
+        hsm2k.Cl_G().nucomp(d, d, r);
+    }
     return d;
 }
 
+int get_threshold_combination_number(Array<int> threshold_parties) {
+    std::sort(threshold_parties.begin(), threshold_parties.end());
 
+    int threshold_combination_number = 0;
+    int running_party_num = 0;
+    for (int party_num : threshold_parties) {
+        threshold_combination_number += party_num - running_party_num;
+        running_party_num = party_num + 1;
+    }
+}
 
 LISSKeyGen keygen(BICYCL::CL_HSM2k& hsm2k, BICYCL::RandGen& randgen, AccessStructure& A, BICYCL::CL_HSM2k::SecretKey& sk, BICYCL::CL_HSM2k::PublicKey& pk) {
     ISP isp = generate_isp(A);
@@ -216,7 +293,7 @@ LISSKeyGen keygen(BICYCL::CL_HSM2k& hsm2k, BICYCL::RandGen& randgen, AccessStruc
     auto c_shares = get_shares(hsm2k, randgen, isp, BICYCL::Mpz((unsigned long)(c)));
 
     LISSKeyGen keygen;
-    keygen.isp = isp;
+    keygen.A = A;
     keygen.secret_key_shares = get_shares(hsm2k, randgen, isp, sk);
     keygen.beaver_triplet_a_shares = encrypt_shares(hsm2k, randgen, pk, a_shares);
     keygen.beaver_triplet_b_shares = encrypt_shares(hsm2k, randgen, pk, b_shares);;
@@ -236,48 +313,25 @@ BICYCL::QFI partDecrypt(BICYCL::CL_HSM2k& hsm2k, BICYCL::CL_HSM2k::CipherText& c
 
 BICYCL::CL_HSM2k::ClearText finalDecrypt(BICYCL::CL_HSM2k& hsm2k, BICYCL::CL_HSM2k::CipherText& ct, Array<BICYCL::QFI>& ds, LISSKeyGen& lk, Array<int>& threshold_parties) {
     
-    Matrix<BICYCL::Mpz> lambda = compute_lambda(hsm2k, lk, threshold_parties);
+    Array<BICYCL::Mpz> lambda = compute_lambda(lk.A.t);
 
-    // BICYCL::QFI d = compute_d(hsm2k, ds, lambda, (lk.isp.Sie));
-
-    BICYCL::QFI d;
-    hsm2k.Cl_Delta().nupow(d, ds[0], lambda[threshold_parties[0]][threshold_parties[1]]);
-    // if (hsm2k.compact_variant())
-    //     hsm2k.from_Cl_DeltaK_to_Cl_Delta (d);
-    BICYCL::QFI temp;
-    hsm2k.Cl_Delta().nupow(temp, ds[1], lambda[threshold_parties[1]][threshold_parties[0]]);
-    // if (hsm2k.compact_variant())
-    //     hsm2k.from_Cl_DeltaK_to_Cl_Delta (temp);
-
-    hsm2k.Cl_Delta().nucomp(d, d, temp);
-    // hsm2k.Cl_Delta().nucompinv(d, ds[0], ds[1]);
+    BICYCL::QFI d = compute_d(hsm2k, ds, lambda, threshold_parties);
 
     BICYCL::QFI r;
     hsm2k.Cl_Delta().nucompinv (r, ct.c2(), d); /* c2 . d^-1 */
 
-    auto v = hsm2k.dlog_in_F(r);    // This is giving error as invalid argument, which I think means value is not decrypted correctly
+    auto v = hsm2k.dlog_in_F(r);
     return BICYCL::CL_HSM2k::ClearText(hsm2k, v);
 }
 
 BICYCL::CL_HSM2k::ClearText decrypt(BICYCL::CL_HSM2k& hsm2k, BICYCL::CL_HSM2k::CipherText& ct, LISSKeyGen& lk, Array<int>& threshold_parties) {
-    auto Sie = lk.isp.Sie;
     auto sk_shares = lk.secret_key_shares;
 
-    /*
-        For each threshold party, part decrypts are calculated for each secret share they own
-        This will get clear once compute_share doubt is resolved
-    */
-    // std::vector<Array<BICYCL::QFI> > ds(Sie.size());
-    // for (int p : threshold_parties) {
-    //     for (int rowNum : Sie[p]) {
-    //         auto di = partDecrypt(hsm2k, ct, sk_shares[rowNum]);
-    //         ds[p].push_back(di);
-    //     }
-    // }
-
+    int threshold_combination_number = get_threshold_combination_number(threshold_parties);
     Array<BICYCL::QFI> ds(threshold_parties.size());
-    ds[0] = partDecrypt(hsm2k, ct, sk_shares[threshold_parties[0]][threshold_parties[1]]);
-    ds[1] = partDecrypt(hsm2k, ct, sk_shares[threshold_parties[1]][threshold_parties[0]]);
+    for (int i = 0; i < threshold_parties.size(); i++) {
+        ds[i] = partDecrypt(hsm2k, ct, sk_shares[threshold_combination_number][i]);
+    }
 
     return finalDecrypt(hsm2k, ct, ds, lk, threshold_parties);
 }
@@ -288,23 +342,24 @@ BICYCL::CL_HSM2k::CipherText ciphertext_multiplication(
     BICYCL::CL_HSM2k::CipherText& x1_e, BICYCL::CL_HSM2k::CipherText& y1_e, BICYCL::CL_HSM2k::CipherText& x2_e, BICYCL::CL_HSM2k::CipherText& y2_e
 ) {
     std::cout << "\nCiphertext Multiplication:" << std::endl;
+    // Lambda values: beavers triplet shares are not additive. They are LISS shares and hence are reconstructed using lambda values
+    auto lambda = compute_lambda(lk.A.t);
+    int threshold_combination_number = get_threshold_combination_number(threshold_parties);
 
     // Beaver's triplet for given threshold parties
-    auto a1_e = lk.beaver_triplet_a_shares[threshold_parties[0]][threshold_parties[1]];
-    auto a2_e = lk.beaver_triplet_a_shares[threshold_parties[1]][threshold_parties[0]];
-    auto b1_e = lk.beaver_triplet_b_shares[threshold_parties[0]][threshold_parties[1]];
-    auto b2_e = lk.beaver_triplet_b_shares[threshold_parties[1]][threshold_parties[0]];
-    auto c1_e = lk.beaver_triplet_c_shares[threshold_parties[0]][threshold_parties[1]];
-    auto c2_e = lk.beaver_triplet_c_shares[threshold_parties[1]][threshold_parties[0]];
+    auto a1_e = hsm2k.scal_ciphertexts(pk, lk.beaver_triplet_a_shares[threshold_combination_number][0], lambda[0], randgen);
+    auto b1_e = hsm2k.scal_ciphertexts(pk, lk.beaver_triplet_b_shares[threshold_combination_number][0], lambda[0], randgen);
+    auto c1_e = hsm2k.scal_ciphertexts(pk, lk.beaver_triplet_c_shares[threshold_combination_number][0], lambda[0], randgen);
+    auto a2_e = hsm2k.scal_ciphertexts(pk, lk.beaver_triplet_a_shares[threshold_combination_number][1], lambda[1], randgen);
+    auto b2_e = hsm2k.scal_ciphertexts(pk, lk.beaver_triplet_b_shares[threshold_combination_number][1], lambda[1], randgen);
+    auto c2_e = hsm2k.scal_ciphertexts(pk, lk.beaver_triplet_c_shares[threshold_combination_number][1], lambda[1], randgen);
 
-    // Lambda values: beavers triplet shares are not additive. They are LISS shares and hence are reconstructed using lambda values
-    auto lambda = compute_lambda(hsm2k, lk, threshold_parties);
 
     // Calculate e and d values
-    auto e1 = hsm2k.add_ciphertexts(pk, x1_e, hsm2k.scal_ciphertexts(pk, hsm2k.scal_ciphertexts(pk, a1_e, lambda[threshold_parties[0]][threshold_parties[1]], randgen), BICYCL::Mpz((unsigned long)(-1)), randgen), randgen);
-    auto d1 = hsm2k.add_ciphertexts(pk, y1_e, hsm2k.scal_ciphertexts(pk, hsm2k.scal_ciphertexts(pk, b1_e, lambda[threshold_parties[0]][threshold_parties[1]], randgen), BICYCL::Mpz((unsigned long)(-1)), randgen), randgen);
-    auto e2 = hsm2k.add_ciphertexts(pk, x2_e, hsm2k.scal_ciphertexts(pk, hsm2k.scal_ciphertexts(pk, a2_e, lambda[threshold_parties[1]][threshold_parties[0]], randgen), BICYCL::Mpz((unsigned long)(-1)), randgen), randgen);
-    auto d2 = hsm2k.add_ciphertexts(pk, y2_e, hsm2k.scal_ciphertexts(pk, hsm2k.scal_ciphertexts(pk, b2_e, lambda[threshold_parties[1]][threshold_parties[0]], randgen), BICYCL::Mpz((unsigned long)(-1)), randgen), randgen);
+    auto e1 = hsm2k.add_ciphertexts(pk, x1_e, hsm2k.scal_ciphertexts(pk, a1_e, BICYCL::Mpz((long)(-1)), randgen), randgen);
+    auto d1 = hsm2k.add_ciphertexts(pk, y1_e, hsm2k.scal_ciphertexts(pk, b1_e, BICYCL::Mpz((long)(-1)), randgen), randgen);
+    auto e2 = hsm2k.add_ciphertexts(pk, x2_e, hsm2k.scal_ciphertexts(pk, a2_e, BICYCL::Mpz((long)(-1)), randgen), randgen);
+    auto d2 = hsm2k.add_ciphertexts(pk, y2_e, hsm2k.scal_ciphertexts(pk, b2_e, BICYCL::Mpz((long)(-1)), randgen), randgen);
 
     // Combine e and d values
     auto e = hsm2k.add_ciphertexts(pk, e1, e2, randgen);
@@ -315,17 +370,34 @@ BICYCL::CL_HSM2k::CipherText ciphertext_multiplication(
     int d_d_int = (int)mpz_get_ui(d_d.operator const __mpz_struct*());
 
     // Calculate r1 and r2
-    auto r1_e = hsm2k.add_ciphertexts(pk, 
-        hsm2k.scal_ciphertexts(pk, c1_e, lambda[threshold_parties[0]][threshold_parties[1]], randgen),
-        hsm2k.add_ciphertexts(pk,
-            hsm2k.add_ciphertexts(pk, hsm2k.scal_ciphertexts(pk, b1_e, e_d, randgen),
-            hsm2k.scal_ciphertexts(pk, a1_e, d_d, randgen), randgen),
-            hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(e_d_int * d_d_int))), randgen), randgen), randgen);
+    auto r1_e = hsm2k.add_ciphertexts(
+        pk, 
+        c1_e,
+        hsm2k.add_ciphertexts(
+            pk,
+            hsm2k.add_ciphertexts(
+                pk, 
+                hsm2k.scal_ciphertexts(pk, b1_e, e_d, randgen),
+                hsm2k.scal_ciphertexts(pk, a1_e, d_d, randgen), 
+                randgen
+            ),
+            hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(e_d_int * d_d_int))), randgen), 
+            randgen
+        ), 
+        randgen
+    );
 
-    auto r2_e = hsm2k.add_ciphertexts(pk, 
-        hsm2k.scal_ciphertexts(pk, c2_e, lambda[threshold_parties[1]][threshold_parties[0]], randgen),
-        hsm2k.add_ciphertexts(pk, hsm2k.scal_ciphertexts(pk, b2_e, e_d, randgen),
-        hsm2k.scal_ciphertexts(pk, a2_e, d_d, randgen), randgen), randgen);
+    auto r2_e = hsm2k.add_ciphertexts(
+        pk, 
+        c2_e,
+        hsm2k.add_ciphertexts(
+            pk, 
+            hsm2k.scal_ciphertexts(pk, b2_e, e_d, randgen),
+            hsm2k.scal_ciphertexts(pk, a2_e, d_d, randgen), 
+            randgen
+        ), 
+        randgen
+    );
 
     // Final result of encrypted multiplication
     auto r = hsm2k.add_ciphertexts(pk, r1_e, r2_e, randgen);
@@ -395,17 +467,18 @@ void homomorphic_operations() {
     // 3) Scalar Multiplication
     scalar_multiplication(hsm2k, randgen, sk, pk);
 
-    // encryption & decyption using part decrypt
-    int temp = 23;
-    auto temp_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(temp))), randgen);
-    auto temp_d = decrypt(hsm2k, temp_e, lk, threshold_parties);
-    int result_value = (int)mpz_get_ui(temp_d.operator const __mpz_struct*());
-    std::cout << "temp dec value: " << result_value << std::endl;
-
+    // 4) Decryption using part decrypt
+    std::cout << "Decryption using Part Decrypt: " << std::endl;
+    int value = 39;
+    auto value_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(value))), randgen);
+    auto value_d = decrypt(hsm2k, value_e, lk, threshold_parties);
+    int value_d_int = (int)mpz_get_ui(value_d.operator const __mpz_struct*());
+    std::cout << "Original value: " << value << std::endl;
+    std::cout << "Decrypted value: " << value_d_int << std::endl;
 
     // 3) Ciphertext Multiplication
     // Secret shares of x = 20 and y = 30
-    int x1 = 5, y1 = 10, x2 = 15, y2 = 20;
+    int x1 = 3, y1 = 10, x2 = 15, y2 = 2;
     auto x1_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(x1))), randgen);
     auto y1_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(y1))), randgen);
     auto x2_e = hsm2k.encrypt(pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((unsigned long)(x2))), randgen);
@@ -413,15 +486,7 @@ void homomorphic_operations() {
     ciphertext_multiplication(hsm2k, randgen, pk, lk, threshold_parties, x1_e, y1_e, x2_e, y2_e);
 
     // 4) 2-degree Polynomial Evaluation
-    // two_degree_polynomial_evaluation(hsm2k, randgen, pk, lk, threshold_parties);
-
-    // auto lambda = compute_lambda(hsm2k, lk, threshold_parties);
-    // auto a1 = hsm2k.scal_ciphertexts(pk, lk.beaver_triplet_a_shares[0][2], lambda[0][2], randgen);
-    // auto a2 = hsm2k.scal_ciphertexts(pk, lk.beaver_triplet_a_shares[2][0], lambda[2][0], randgen);
-    // auto a = hsm2k.add_ciphertexts(pk, a1, a2, randgen);
-    // auto a_d = decrypt(hsm2k, a, lk, threshold_parties);
-    // int result_a = (int)mpz_get_ui(a_d.operator const __mpz_struct*());
-    // std::cout << "a dec value: " << result_a << std::endl;
+    two_degree_polynomial_evaluation(hsm2k, randgen, pk, lk, threshold_parties);
 }
 
 int main() {
