@@ -3,9 +3,40 @@
 #include <iostream>
 #include <vector>
 
-template <typename T> using Matrix = std::vector<std::vector<T>>;
-
 template <typename T> using Array = std::vector<T>;
+
+template <typename T> using Matrix = std::vector<Array<T> >;
+
+
+/******************************************************************************************************************************/
+/* Utilities START */
+/******************************************************************************************************************************/
+Matrix<BICYCL::CL_HSM2k::CipherText>
+encrypt_matrix(BICYCL::CL_HSM2k &hsm2k, BICYCL::RandGen &randgen,
+               BICYCL::CL_HSM2k::PublicKey &pk, Matrix<BICYCL::Mpz> matrix) {
+  Matrix<BICYCL::CL_HSM2k::CipherText> encrypted_matrix(
+      matrix.size(),
+      std::vector<BICYCL::CL_HSM2k::CipherText>(matrix[0].size()));
+  for (int i = 0; i < matrix.size(); i++) {
+    for (int j = 0; j < matrix[0].size(); j++) {
+      encrypted_matrix[i][j] = hsm2k.encrypt(
+          pk, BICYCL::CL_HSM2k::ClearText(hsm2k, matrix[i][j]), randgen);
+    }
+  }
+  return encrypted_matrix;
+}
+
+int nCr(int n, int r) {
+  double res = 1;
+  for (int i = 1; i <= r; i++) {
+    res = res * (n - r + i) / i;
+  }
+  return res;
+}
+/******************************************************************************************************************************/
+/* Utilities END */
+/******************************************************************************************************************************/
+
 
 /******************************************************************************************************************************/
 /* LISS START */
@@ -103,23 +134,20 @@ Matrix<int> compute_M_AND(const Matrix<int> &Ma, const Matrix<int> &Mb) {
   return M_AND;
 }
 
-int nCr(int n, int r) {
-  double res = 1;
-  for (int i = 1; i <= r; i++) {
-    res = res * (n - r + i) / i;
-  }
-  return res;
-}
-
+// Generates distribution matrix for the given Access Structure
 Matrix<int> generate_distribution_matrix_M(int n, int t,
                                            int threshold_combinations) {
+  // See https://cs.au.dk/fileadmin/site_files/cs/PhD/PhD_Dissertations__pdf/Thesis-RIT.pdf
+  // Section 3.3.1 : Page 24,25,26
   Matrix<int> Mu{{1}};
   Matrix<int> Mt = Mu;
 
+  // Compute distribution matrix for one threshold combination. It will be same for each threshold combination
   for (int i = 1; i < t; i++) {
     Mt = compute_M_AND(Mt, Mu);
   }
 
+  // Now, combine the Mt of each threshold combination to produce distribution matrix M for given t,n
   Matrix<int> M = Mt;
   for (int i = 1; i < threshold_combinations; i++) {
     M = compute_M_OR(M, Mt);
@@ -127,17 +155,18 @@ Matrix<int> generate_distribution_matrix_M(int n, int t,
   return M;
 }
 
-Matrix<int> generate_Sie(int n, int t) {
-  Matrix<int> Sie(n, Array<int>(n, -1));
-}
-
 // Function to generate a random matrix M (d x e) with 0s and 1s
 ISP generate_isp(AccessStructure &A) {
   int n = A.n, t = A.t;
 
+  // Get the number of threshold combinations for the given t & n
   int threshold_combinations = nCr(n, t);
+
+  // Generate distribution matrix
   Matrix<int> M = generate_distribution_matrix_M(n, t, threshold_combinations);
 
+  // Create the mapping between the rows of M and the threshold combinations of parties (parties are represented by numbers staring from 0)
+  // ith row of Sie contains the row indexes of M corresponding to ith threshold combination of parties when sorted
   Matrix<int> Sie(threshold_combinations, Array<int>(t, 0));
   int M_row_num = 0;
   for (int i = 0; i < threshold_combinations; i++) {
@@ -155,6 +184,7 @@ ISP generate_isp(AccessStructure &A) {
   return isp;
 }
 
+// Function to compute rho: ρ := (secret, ρ2, . . . , ρe)⊤; (ρ2, . . . , ρe) ←− [2^(l0+λ), 2^(l0+λ)]^(e−1)
 Array<BICYCL::Mpz> compute_rho(BICYCL::Mpz &secret, int e) {
   std::string seed =
       "115792089237"; // seed should be kept secret in real-world usage
@@ -173,11 +203,16 @@ Array<BICYCL::Mpz> compute_rho(BICYCL::Mpz &secret, int e) {
   return rho;
 }
 
+// Function to compute shares
 Matrix<BICYCL::Mpz> compute_shares(ISP &isp, Array<BICYCL::Mpz> &rho) {
+  // See https://eprint.iacr.org/2022/1143.pdf Algorithm 8
   Matrix<int> M = isp.M;
   Matrix<int> Sie = isp.Sie;
   int rows = isp.rows, cols = isp.cols;
 
+  // Shares are computed for each party as per mapping
+  // Shares are stored in the same way as Sie.
+  // ith row of shares matrix contains shares of parties corresponding to ith threshold combination of parties when sorted
   Matrix<BICYCL::Mpz> shares;
   for (auto Sp : Sie) {
     Array<BICYCL::Mpz> si;
@@ -194,10 +229,10 @@ Matrix<BICYCL::Mpz> compute_shares(ISP &isp, Array<BICYCL::Mpz> &rho) {
     }
     shares.push_back(si);
   }
-  std::cout << std::endl;
   return shares;
 }
 
+// Function to get shares of a secret
 Matrix<BICYCL::Mpz> get_shares(BICYCL::CL_HSM2k &hsm2k,
                                BICYCL::RandGen &randgen, ISP &isp,
                                BICYCL::Mpz secret) {
@@ -205,7 +240,15 @@ Matrix<BICYCL::Mpz> get_shares(BICYCL::CL_HSM2k &hsm2k,
   return compute_shares(isp, rho);
 }
 
+// Function to compute λ for one threshold combination
 Array<BICYCL::Mpz> compute_lambda(int t) {
+  // See https://cs.au.dk/fileadmin/site_files/cs/PhD/PhD_Dissertations__pdf/Thesis-RIT.pdf
+  // Lemma 3.2, Page 26,27
+
+  // One threshold combination contains each party once with just & operator between them
+  // Ex, consider t = 4, threshold combination = x1 & x2 & x3 & x4
+  // From the Lemma 3.2 of above mentioned doc, lambda(f1 & f2) = [...lambda(f1), -(...lambda(f2))]
+  // Also, lambda(xi) = [1], So, lambda(x1 & x2) = [1, -1], lambda((x1 & x2) & x3) = [1, -1, -1] and so on.
   Array<BICYCL::Mpz> lambda{BICYCL::Mpz((unsigned long)(1))};
   for (int i = 0; i < t; i++) {
     lambda.push_back(BICYCL::Mpz((long)(-1)));
@@ -216,24 +259,11 @@ Array<BICYCL::Mpz> compute_lambda(int t) {
 /* LISS END */
 /******************************************************************************************************************************/
 
-Matrix<BICYCL::CL_HSM2k::CipherText>
-encrypt_shares(BICYCL::CL_HSM2k &hsm2k, BICYCL::RandGen &randgen,
-               BICYCL::CL_HSM2k::PublicKey &pk, Matrix<BICYCL::Mpz> shares) {
-  Matrix<BICYCL::CL_HSM2k::CipherText> encrypted_shares(
-      shares.size(),
-      std::vector<BICYCL::CL_HSM2k::CipherText>(shares[0].size()));
-  for (int i = 0; i < shares.size(); i++) {
-    for (int j = 0; j < shares[0].size(); j++) {
-      encrypted_shares[i][j] = hsm2k.encrypt(
-          pk, BICYCL::CL_HSM2k::ClearText(hsm2k, shares[i][j]), randgen);
-    }
-  }
-  return encrypted_shares;
-}
 
 /******************************************************************************************************************************/
 /* Decryption using Partial Decryption Scheme START */
 /******************************************************************************************************************************/
+// Combines the partial decryption using lambda values to get d: d = Prod(di^lambdai)
 BICYCL::QFI compute_d(BICYCL::CL_HSM2k &hsm2k, Array<BICYCL::QFI> &ds,
                       Array<BICYCL::Mpz> &lambda) {
   BICYCL::QFI d;
@@ -245,15 +275,19 @@ BICYCL::QFI compute_d(BICYCL::CL_HSM2k &hsm2k, Array<BICYCL::QFI> &ds,
   return d;
 }
 
+// Function to get the index of threshold combination of parties provided: index is calculated such that threshold combinations are in sorted order
 int get_threshold_combination_index(Array<int> &threshold_parties,
                                     AccessStructure &A) {
+  // Sort the given threshold combination                                    
   std::sort(threshold_parties.begin(), threshold_parties.end());
 
-  // remove the extra parties as we only need threshold number of parties
+  // Remove the extra parties as we only need threshold number of parties
   if (threshold_parties.size() > A.t) {
     threshold_parties.erase(threshold_parties.begin() + A.t,
                             threshold_parties.end());
   }
+
+  // Compute the index of given threshold combination in all threshold combinations when sorted
   int threshold_combination_index = 0;
   int running_party_num = 0;
   for (int party_num : threshold_parties) {
@@ -263,8 +297,10 @@ int get_threshold_combination_index(Array<int> &threshold_parties,
   return threshold_combination_index;
 }
 
+// Computes the partial decrypt of a ciphertext with a given share
 BICYCL::QFI partDecrypt(BICYCL::CL_HSM2k &hsm2k,
                         BICYCL::CL_HSM2k::CipherText &ct, BICYCL::Mpz &ski) {
+  // See https://eprint.iacr.org/2022/1143.pdf Algorithm 10
   BICYCL::QFI di;
   hsm2k.Cl_G().nupow(di, ct.c1(), ski); // di = c1^sj
   if (hsm2k.compact_variant())
@@ -273,10 +309,11 @@ BICYCL::QFI partDecrypt(BICYCL::CL_HSM2k &hsm2k,
   return di;
 }
 
+// Computes the final decrypt of a ciphertext with part decrypts
 BICYCL::CL_HSM2k::ClearText finalDecrypt(BICYCL::CL_HSM2k &hsm2k,
                                          BICYCL::CL_HSM2k::CipherText &ct,
-                                         Array<BICYCL::QFI> &ds,
-                                         Matrix<BICYCL::Mpz> &sk_shares) {
+                                         Array<BICYCL::QFI> &ds) {
+  // See https://eprint.iacr.org/2022/1143.pdf Algorithm 11
 
   Array<BICYCL::Mpz> lambda = compute_lambda(ds.size());
 
@@ -288,6 +325,7 @@ BICYCL::CL_HSM2k::ClearText finalDecrypt(BICYCL::CL_HSM2k &hsm2k,
   return BICYCL::CL_HSM2k::ClearText(hsm2k, hsm2k.dlog_in_F(r));
 }
 
+// Decrypt a ciphertext using partial decryption schme
 BICYCL::CL_HSM2k::ClearText decrypt(BICYCL::CL_HSM2k &hsm2k,
                                     BICYCL::CL_HSM2k::CipherText &ct,
                                     Matrix<BICYCL::Mpz> &sk_shares,
@@ -296,12 +334,14 @@ BICYCL::CL_HSM2k::ClearText decrypt(BICYCL::CL_HSM2k &hsm2k,
   int threshold_combination_index =
       get_threshold_combination_index(threshold_parties, A);
 
+  // Compute the partial decrypts for each share of the given threshold combination of parties
   Array<BICYCL::QFI> ds(threshold_parties.size());
   for (int i = 0; i < threshold_parties.size(); i++) {
     ds[i] = partDecrypt(hsm2k, ct, sk_shares[threshold_combination_index][i]);
   }
 
-  return finalDecrypt(hsm2k, ct, ds, sk_shares);
+  // Combine the partial decrypts to get the final decrypted text
+  return finalDecrypt(hsm2k, ct, ds);
 }
 /******************************************************************************************************************************/
 /* Decryption using Partial Decryption Scheme END */
@@ -325,15 +365,18 @@ multiply_ciphertexts(BICYCL::CL_HSM2k &hsm2k, BICYCL::RandGen &randgen,
                      Matrix<BICYCL::CL_HSM2k::CipherText> &x_shares,
                      Matrix<BICYCL::CL_HSM2k::CipherText> &y_shares,
                      BeaversTriplet &beavers_triplet) {
+
   // Lambda values: beavers triplet shares are not additive. They are LISS
   // shares and hence are reconstructed using lambda values
   auto lambda = compute_lambda(threshold_parties.size());
   int threshold_combination_index =
       get_threshold_combination_index(threshold_parties, A);
 
+  // Calculate e & d values: e = summation(ei), d = summation(di)
+  // ei = lambdai * xi - lambdai * ai, di = lambdai * yi - lambdai * bi
   BICYCL::CL_HSM2k::CipherText e = hsm2k.encrypt(
       pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((long)(0))), randgen);
-  BICYCL::CL_HSM2k::CipherText d = e;
+  BICYCL::CL_HSM2k::CipherText d = e; // initialize e, d with 0
   for (int i = 0; i < threshold_parties.size(); i++) {
     auto xi = hsm2k.scal_ciphertexts(
         pk, x_shares[threshold_combination_index][i], lambda[i], randgen);
@@ -358,13 +401,19 @@ multiply_ciphertexts(BICYCL::CL_HSM2k &hsm2k, BICYCL::RandGen &randgen,
     d = hsm2k.add_ciphertexts(pk, d, di, randgen);
   }
 
+  // decrypt e and d
   auto e_d = decrypt(hsm2k, e, sk_shares, threshold_parties, A);
   auto d_d = decrypt(hsm2k, d, sk_shares, threshold_parties, A);
   int e_d_int = (int)mpz_get_ui(e_d.operator const __mpz_struct *());
   int d_d_int = (int)mpz_get_ui(d_d.operator const __mpz_struct *());
 
+
+  // Calculate r = summation(ri) + e * d
+  // ri = ci + e * bi + d * ai
   BICYCL::CL_HSM2k::CipherText r = hsm2k.encrypt(
-      pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((long)(0))), randgen);
+      pk, BICYCL::CL_HSM2k::ClearText(hsm2k, BICYCL::Mpz((long)(0))), randgen); // initialize r with 0
+
+  // summation (ri)
   for (int i = 0; i < threshold_parties.size(); i++) {
     auto ai = hsm2k.scal_ciphertexts(
         pk, beavers_triplet.a_shares[threshold_combination_index][i], lambda[i],
@@ -384,6 +433,7 @@ multiply_ciphertexts(BICYCL::CL_HSM2k &hsm2k, BICYCL::RandGen &randgen,
     r = hsm2k.add_ciphertexts(pk, r, ri, randgen);
   }
 
+  // summation(ri) + e * d
   r = hsm2k.add_ciphertexts(
       pk, r,
       hsm2k.encrypt(pk,
@@ -401,8 +451,7 @@ multiply_ciphertexts(BICYCL::CL_HSM2k &hsm2k, BICYCL::RandGen &randgen,
 /******************************************************************************************************************************/
 /* Multiparty 2-Degree Polynomial Evaluation START */
 /******************************************************************************************************************************/
-// 2-degree Polynomial Evaluation: ax^2 + bx + c where a,b,c are constants and x
-// is ciphertext
+// 2-degree Polynomial Evaluation: ax^2 + bx + c where a,b,c are constants and x is ciphertext
 BICYCL::CL_HSM2k::CipherText evaluate_two_degree_polynomial(
     BICYCL::CL_HSM2k &hsm2k, BICYCL::RandGen &randgen,
     BICYCL::CL_HSM2k::PublicKey &pk, Array<int> &threshold_parties,
@@ -506,10 +555,10 @@ void ciphertext_multiplication(BICYCL::CL_HSM2k &hsm2k,
   std::cout << "\nCiphertext Multiplication:" << std::endl;
   int x = 12, y = 21;
   auto x_shares =
-      encrypt_shares(hsm2k, randgen, pk,
+      encrypt_matrix(hsm2k, randgen, pk,
                      get_shares(hsm2k, randgen, isp, BICYCL::Mpz((long)(x))));
   auto y_shares =
-      encrypt_shares(hsm2k, randgen, pk,
+      encrypt_matrix(hsm2k, randgen, pk,
                      get_shares(hsm2k, randgen, isp, BICYCL::Mpz((long)(y))));
 
   auto result_mul =
@@ -535,7 +584,7 @@ void two_degree_polynomial_evaluation(BICYCL::CL_HSM2k &hsm2k,
   int a = 15, b = 35, c = 7;
   int x = 12;
   auto x_shares =
-      encrypt_shares(hsm2k, randgen, pk,
+      encrypt_matrix(hsm2k, randgen, pk,
                      get_shares(hsm2k, randgen, isp, BICYCL::Mpz((long)(x))));
 
   auto result_2_deg = evaluate_two_degree_polynomial(
@@ -581,13 +630,13 @@ void homomorphic_operations() {
   int a = 15, b = 35, c = a * b;
   BeaversTriplet beavers_triplet;
   beavers_triplet.a_shares =
-      encrypt_shares(hsm2k, randgen, pk,
+      encrypt_matrix(hsm2k, randgen, pk,
                      get_shares(hsm2k, randgen, isp, BICYCL::Mpz((long)(a))));
   beavers_triplet.b_shares =
-      encrypt_shares(hsm2k, randgen, pk,
+      encrypt_matrix(hsm2k, randgen, pk,
                      get_shares(hsm2k, randgen, isp, BICYCL::Mpz((long)(b))));
   beavers_triplet.c_shares =
-      encrypt_shares(hsm2k, randgen, pk,
+      encrypt_matrix(hsm2k, randgen, pk,
                      get_shares(hsm2k, randgen, isp, BICYCL::Mpz((long)(c))));
 
   /******************************************************************************************************************************/
